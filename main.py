@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from examples import SAMPLE_INPUTS
 from llm_client import LLMClient, LLMError
-from prompts import SYSTEM_PROMPT, build_user_prompt
+from prompts import DEFAULT_PROMPT_VARIANT, PromptVariant
 from schemas import TextAnalysis
 
 LOGGER = logging.getLogger("llm_pipeline")
@@ -20,7 +20,22 @@ class PipelineError(RuntimeError):
     """Raised when pipeline input or model output is invalid."""
 
 
-def process_text(text: str, client: LLMClient) -> TextAnalysis:
+def parse_analysis_response(raw_response: str) -> TextAnalysis:
+    """Parse and validate one structured model response."""
+
+    try:
+        payload = json.loads(raw_response)
+        return TextAnalysis.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as error:
+        LOGGER.error("The model returned an invalid structured response")
+        raise PipelineError("The model returned invalid structured JSON") from error
+
+
+def process_text(
+    text: str,
+    client: LLMClient,
+    prompt_variant: PromptVariant = DEFAULT_PROMPT_VARIANT,
+) -> TextAnalysis:
     """Analyze one text and validate the provider's structured response."""
 
     normalized_text = text.strip()
@@ -29,15 +44,10 @@ def process_text(text: str, client: LLMClient) -> TextAnalysis:
 
     LOGGER.info("Starting text analysis")
     raw_response = client.complete(
-        system_prompt=SYSTEM_PROMPT,
-        user_prompt=build_user_prompt(normalized_text),
+        system_prompt=prompt_variant.system_prompt,
+        user_prompt=prompt_variant.build_user_prompt(normalized_text),
     )
-    try:
-        payload = json.loads(raw_response)
-        result = TextAnalysis.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError) as error:
-        LOGGER.error("The model returned an invalid structured response")
-        raise PipelineError("The model returned invalid structured JSON") from error
+    result = parse_analysis_response(raw_response)
 
     LOGGER.info("Text analysis completed")
     return result

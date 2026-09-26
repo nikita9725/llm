@@ -6,7 +6,8 @@ import pytest
 
 import main as app
 from llm_client import LLMAPIError
-from main import PipelineError, process_text
+from main import PipelineError, parse_analysis_response, process_text
+from prompts import MINIMAL_PROMPT
 
 VALID_RESPONSE = json.dumps(
     {
@@ -27,6 +28,18 @@ def test_process_text_returns_validated_model() -> None:
     assert result.summary == "Кратко"
     assert len(result.key_points) == 3
     assert "Исходный текст" in client.complete.call_args.kwargs["user_prompt"]
+
+
+def test_process_text_uses_selected_prompt_variant() -> None:
+    client = Mock()
+    client.complete.return_value = VALID_RESPONSE
+
+    process_text("Text", client, MINIMAL_PROMPT)
+
+    client.complete.assert_called_once_with(
+        system_prompt=MINIMAL_PROMPT.system_prompt,
+        user_prompt=MINIMAL_PROMPT.build_user_prompt("Text"),
+    )
 
 
 def test_process_text_rejects_empty_input_without_api_call() -> None:
@@ -53,6 +66,10 @@ def test_process_text_rejects_invalid_structured_response(response: str) -> None
 
     with pytest.raises(PipelineError, match="invalid structured JSON"):
         process_text("Text", client)
+
+
+def test_parse_analysis_response_returns_validated_model() -> None:
+    assert parse_analysis_response(VALID_RESPONSE).summary == "Кратко"
 
 
 def test_cli_text_prints_and_saves_single_json(

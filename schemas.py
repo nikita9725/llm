@@ -8,9 +8,9 @@ class TextAnalysis(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    summary: str = Field(min_length=1)
+    summary: str = Field(min_length=1, max_length=300)
     key_points: list[str] = Field(min_length=3, max_length=3)
-    helpful_response: str = Field(min_length=1)
+    helpful_response: str = Field(min_length=1, max_length=200)
 
     @field_validator("key_points")
     @classmethod

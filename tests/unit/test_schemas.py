@@ -29,3 +29,30 @@ def test_text_analysis_rejects_blank_point() -> None:
             key_points=["one", " ", "three"],
             helpful_response="Response",
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "length"),
+    [("summary", 301), ("helpful_response", 201)],
+)
+def test_text_analysis_rejects_overlong_strings(field: str, length: int) -> None:
+    payload = {
+        "summary": "s",
+        "key_points": ["one", "two", "three"],
+        "helpful_response": "r",
+    }
+    payload[field] = "x" * length
+
+    with pytest.raises(ValidationError):
+        TextAnalysis.model_validate(payload)
+
+
+def test_text_analysis_accepts_length_boundaries() -> None:
+    result = TextAnalysis(
+        summary="s" * 300,
+        key_points=["one", "two", "three"],
+        helpful_response="r" * 200,
+    )
+
+    assert len(result.summary) == 300
+    assert len(result.helpful_response) == 200
