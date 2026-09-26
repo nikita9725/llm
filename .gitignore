@@ -8,3 +8,4 @@ __pycache__/
 htmlcov/
 .idea/
 output.json
+prompt_comparison.json

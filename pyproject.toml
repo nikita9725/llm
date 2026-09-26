@@ -34,6 +34,7 @@ files = [
     "prompts.py",
     "schemas.py",
     "examples.py",
+    "compare_prompts.py",
 ]
 
 [tool.pytest.ini_options]
