@@ -114,14 +114,17 @@ repair → repair нет.
 из подходящих обработчиков, а здесь обязательны все пять звеньев, поэтому явный
 pipeline точнее отражает задачу.
 
-## Установка
+## Быстрый старт с нуля
 
-Требуются Python 3.14, [uv](https://docs.astral.sh/uv/) и API, совместимый с
-OpenAI Chat Completions JSON mode.
+Требуются Python 3.12–3.14, [uv](https://docs.astral.sh/uv/) и API, совместимый
+с OpenAI Chat Completions JSON mode. Команды ниже создают окружение строго по
+зафиксированному `uv.lock`.
 
 ```bash
-uv python install 3.14
-uv sync
+git clone <repository-url>
+cd llm
+uv python install 3.12
+uv sync --locked
 cp .env.example .env
 ```
 
@@ -132,6 +135,13 @@ LLM_API_KEY=your-secret-key
 LLM_BASE_URL=https://your-provider.example/v1
 LLM_MODEL=your-model-name
 RUN_E2E=false
+```
+
+Проверьте установку без обращения к внешнему API:
+
+```bash
+uv run pytest
+uv run llm-pipeline --help
 ```
 
 Конфигурация создаётся через `LLMConfig.from_mapping()`. Чтение `.env` и
@@ -151,7 +161,9 @@ uv run llm-pipeline analyze --text "Не могу войти после смен
 Чтение UTF-8 файла и сохранение полной трассы:
 
 ```bash
-uv run llm-pipeline analyze --input-file sample.txt --output result.json
+uv run llm-pipeline analyze \
+  --input-file sample_inputs/01_support_password_reset.txt \
+  --output result.json
 ```
 
 Demo на десяти размеченных примерах:
@@ -168,6 +180,20 @@ uv run llm-pipeline compare-prompts --output prompt_comparison.json
 
 `uv run python main.py ...` остаётся совместимым launcher, но вызывает тот же
 CLI-dispatcher. У `compare_prompts.py` больше нет отдельного запуска.
+
+Пример сокращённого консольного результата:
+
+```text
+1. EXTRACT MEANING
+   Смысл: Пользователь потерял доступ
+2. CLASSIFY REQUEST
+   Категория: support
+3. BUILD STRUCTURED FIELDS
+   Резюме: Нужна помощь со входом
+4. GENERATE FINAL ANSWER
+   Проверьте доступ к привязанной почте...
+5. SELF-CHECK: PASS
+```
 
 При ожидаемой ошибке единственного текста CLI показывает короткое сообщение и
 поднимает `SystemExit`. В пакетном demo ошибка одного текста не отменяет остальные:
@@ -219,6 +245,25 @@ CLI-dispatcher. У `compare_prompts.py` больше нет отдельного
 
 Успешный одиночный запуск сохраняет прежний формат — непосредственно
 `PipelineResult`, без дополнительной обёртки.
+
+## Демонстрационные сценарии
+
+Каталог `sample_inputs/` содержит самостоятельные UTF-8 входы, каждый из которых
+можно передать через `--input-file`. Те же тексты входят во встроенный batch-demo;
+unit-тест не позволяет двум наборам разойтись.
+
+| Файл | Сценарий | Ожидаемый route |
+| --- | --- | --- |
+| `01_support_password_reset.txt` | восстановление доступа | `support` |
+| `02_support_pdf_crash.txt` | сбой приложения | `support` |
+| `03_feedback_search.txt` | отзыв о поиске | `feedback` |
+| `04_feedback_dark_theme.txt` | предложение тёмной темы | `feedback` |
+| `05_complaint_delayed_order.txt` | задержка заказа | `complaint` |
+| `06_complaint_double_charge.txt` | двойное списание | `complaint` |
+| `07_sales_demo.txt` | запрос демонстрации | `sales` |
+| `08_sales_licenses.txt` | покупка лицензий | `sales` |
+| `09_general_python.txt` | вопрос о Python | `general_question` |
+| `10_general_planning.txt` | планирование встречи | `general_question` |
 
 ## Логирование
 
@@ -276,5 +321,26 @@ Fake, spy и in-memory реализации передаются через ко
 - `prompts.py` — prompt strategies и исторические варианты Дня 2;
 - `schemas.py` — входные, промежуточные и итоговые Pydantic-модели;
 - `llm_client.py` — OpenAI-compatible реализация `LLMGateway`;
-- `examples.py` — десять размеченных примеров;
+- `examples.py` и `sample_inputs/` — десять размеченных demo-сценариев;
 - `tests/unit`, `tests/integration`, `tests/e2e` — три уровня тестов.
+
+## Соответствие финальному заданию
+
+| Требование | Реализация |
+| --- | --- |
+| Принимать произвольный текст | `--text` и `--input-file` |
+| Summary и key points | этап `StructuredFields`, ровно три key points |
+| Категория и intent | этап `Classification`, пять допустимых routes |
+| Structured JSON | строгие Pydantic-схемы и `--output` |
+| Routing влияет на ответ | отдельная инструкция ответа для каждой категории |
+| Multi-step workflow | пять последовательных этапов с типизированными входами |
+| Guardrails | лимиты, strict JSON, запрет лишних полей, schema validation |
+| Retries и fallback | transport retry и один semantic repair на этап |
+| Логирование | начало/конец этапов, retry, repair и ошибки без секретов |
+| Проверяемость | unit, integration, opt-in E2E и 10 demo-входов |
+
+Таким образом, pipeline выполняет полный цикл: принимает сырой текст, извлекает
+смысл, классифицирует запрос, строит структурированные поля, генерирует ответ по
+выбранному маршруту и возвращает проверенную JSON-трассу. Это намеренно один
+учебный workflow; RAG, Agents, web-интерфейс и production-инфраструктура остаются
+за рамками mini-product.
