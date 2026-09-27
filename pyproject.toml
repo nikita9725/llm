@@ -10,6 +10,27 @@ dependencies = [
     "python-dotenv>=1.1,<2",
 ]
 
+[project.scripts]
+llm-pipeline = "cli:main"
+
+[build-system]
+requires = ["setuptools>=80,<81"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "application",
+    "cli",
+    "compare_prompts",
+    "examples",
+    "interfaces",
+    "llm_client",
+    "main",
+    "pipeline",
+    "prompts",
+    "schemas",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=1.18,<2",
@@ -29,8 +50,12 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 python_version = "3.14"
 strict = true
 files = [
+    "application.py",
+    "cli.py",
     "main.py",
     "llm_client.py",
+    "pipeline.py",
+    "interfaces.py",
     "prompts.py",
     "schemas.py",
     "examples.py",
@@ -42,5 +67,6 @@ addopts = "-m 'not e2e'"
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
+    "integration: component integration tests without network access",
     "e2e: calls a real, potentially paid LLM API",
 ]
