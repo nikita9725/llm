@@ -47,12 +47,16 @@ def test_cli_returns_valid_analysis(tmp_path: Path) -> None:
         f"stderr:\n{completed.stderr}"
     )
     assert "Краткое резюме:" in completed.stdout
+    assert "Категория:" in completed.stdout
+    assert "Тональность:" in completed.stdout
     assert "Ключевые мысли:" in completed.stdout
-    assert "Полезный ответ:" in completed.stdout
+    assert "Итоговый ответ:" in completed.stdout
     assert output_path.is_file()
 
     result = TextAnalysis.model_validate_json(output_path.read_text(encoding="utf-8"))
     assert result.summary
+    assert result.category
+    assert result.sentiment
     assert len(result.key_points) == 3
     assert all(result.key_points)
-    assert result.helpful_response
+    assert result.final_answer

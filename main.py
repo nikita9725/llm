@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from pydantic import ValidationError
 from examples import SAMPLE_INPUTS
 from llm_client import LLMClient, LLMError
 from prompts import DEFAULT_PROMPT_VARIANT, PromptVariant
-from schemas import TextAnalysis
+from schemas import Category, Sentiment, TextAnalysis
 
 LOGGER = logging.getLogger("llm_pipeline")
 
@@ -25,10 +26,23 @@ def parse_analysis_response(raw_response: str) -> TextAnalysis:
 
     try:
         payload = json.loads(raw_response)
+    except json.JSONDecodeError as error:
+        message = (
+            "Ответ модели не является корректным JSON "
+            f"(строка {error.lineno}, столбец {error.colno})"
+        )
+        raise PipelineError(message) from error
+
+    try:
         return TextAnalysis.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError) as error:
-        LOGGER.error("The model returned an invalid structured response")
-        raise PipelineError("The model returned invalid structured JSON") from error
+    except ValidationError as error:
+        issues = "; ".join(
+            f"{'.'.join(map(str, issue['loc'])) or '<root>'}: {issue['msg']}"
+            for issue in error.errors()
+        )
+        raise PipelineError(
+            f"Ответ модели не прошёл проверку схемы: {issues}"
+        ) from error
 
 
 def process_text(
@@ -67,10 +81,38 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_result(title: str, result: TextAnalysis) -> None:
     print(f"\n=== {title} ===")
     print(f"Краткое резюме: {result.summary}")
+    print(f"Категория: {result.category.value}")
+    print(f"Тональность: {result.sentiment.value}")
     print("Ключевые мысли:")
     for index, point in enumerate(result.key_points, start=1):
         print(f"  {index}. {point}")
-    print(f"Полезный ответ: {result.helpful_response}")
+    print(f"Итоговый ответ: {result.final_answer}")
+
+
+def _print_demo_summary(results: Sequence[tuple[str, TextAnalysis]]) -> None:
+    """Print aggregate counts and highlight results requiring attention."""
+
+    category_counts = Counter(result.category for _, result in results)
+    sentiment_counts = Counter(result.sentiment for _, result in results)
+    attention_titles = [
+        title
+        for title, result in results
+        if result.sentiment in {Sentiment.NEGATIVE, Sentiment.MIXED}
+    ]
+
+    print("\n=== Сводка по примерам ===")
+    print("Категории:")
+    for category in Category:
+        if count := category_counts[category]:
+            print(f"  {category.value}: {count}")
+    print("Тональности:")
+    for sentiment in Sentiment:
+        if count := sentiment_counts[sentiment]:
+            print(f"  {sentiment.value}: {count}")
+    if attention_titles:
+        print(f"Требуют внимания: {', '.join(attention_titles)}")
+    else:
+        print("Требуют внимания: нет")
 
 
 def _write_json(path: Path, results: TextAnalysis | list[TextAnalysis]) -> None:
@@ -121,7 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOGGER.error("%s", error)
         return 1
 
-    results: list[TextAnalysis] = []
+    titled_results: list[tuple[str, TextAnalysis]] = []
     had_errors = False
     for title, text in inputs:
         try:
@@ -132,11 +174,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not demo_mode:
                 break
             continue
-        results.append(result)
+        titled_results.append((title, result))
         _print_result(title, result)
+
+    if demo_mode and titled_results:
+        _print_demo_summary(titled_results)
 
     if args.output and not had_errors:
         try:
+            results = [result for _, result in titled_results]
             output: TextAnalysis | list[TextAnalysis]
             output = results if demo_mode else results[0]
             _write_json(args.output, output)
