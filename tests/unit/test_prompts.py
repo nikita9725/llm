@@ -1,11 +1,16 @@
 import pytest
 
 from prompts import (
+    CLASSIFICATION_SYSTEM_PROMPT,
     DEFAULT_PROMPT_VARIANT,
     PROMPT_VARIANTS,
+    ROUTE_INSTRUCTIONS,
     PromptVariant,
+    build_classification_user_prompt,
+    build_routed_system_prompt,
     build_user_prompt,
 )
+from schemas import Category
 
 
 def test_three_named_prompt_variants_are_available() -> None:
@@ -36,18 +41,42 @@ def test_build_user_prompt_uses_default_variant() -> None:
 def test_every_prompt_requests_complete_structured_contract(
     variant: PromptVariant,
 ) -> None:
-    for field in ("summary", "category", "sentiment", "key_points", "final_answer"):
+    for field in (
+        "summary",
+        "category",
+        "intent",
+        "sentiment",
+        "key_points",
+        "final_answer",
+    ):
         assert field in variant.system_prompt
     for value in (
-        "question",
-        "request",
+        "support",
         "feedback",
-        "problem",
-        "informational",
-        "other",
+        "complaint",
+        "sales",
+        "general_question",
         "positive",
         "neutral",
         "negative",
         "mixed",
     ):
         assert value in variant.system_prompt
+
+
+def test_classifier_prompt_contains_all_categories_and_source_once() -> None:
+    source = "Unique source text"
+
+    assert build_classification_user_prompt(source).count(source) == 1
+    for category in Category:
+        assert category.value in CLASSIFICATION_SYSTEM_PROMPT
+
+
+def test_every_category_has_a_distinct_explicit_route_instruction() -> None:
+    assert set(ROUTE_INSTRUCTIONS) == set(Category)
+    prompts = [build_routed_system_prompt(category) for category in Category]
+
+    assert len(set(prompts)) == len(Category)
+    for category, prompt in zip(Category, prompts, strict=True):
+        assert f"Route: {category.value}" in prompt
+        assert ROUTE_INSTRUCTIONS[category] in prompt

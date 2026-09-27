@@ -6,14 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Category(StrEnum):
-    """Supported intent categories for analyzed text."""
+    """Business routes supported by the pipeline."""
 
-    QUESTION = "question"
-    REQUEST = "request"
+    SUPPORT = "support"
     FEEDBACK = "feedback"
-    PROBLEM = "problem"
-    INFORMATIONAL = "informational"
-    OTHER = "other"
+    COMPLAINT = "complaint"
+    SALES = "sales"
+    GENERAL_QUESTION = "general_question"
 
 
 class Sentiment(StrEnum):
@@ -25,16 +24,26 @@ class Sentiment(StrEnum):
     MIXED = "mixed"
 
 
-class TextAnalysis(BaseModel):
-    """Structured result returned by the LLM pipeline."""
+class StrictOutputModel(BaseModel):
+    """Base configuration shared by all model-produced payloads."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    summary: str = Field(min_length=1, max_length=300, strict=True)
+
+class Classification(StrictOutputModel):
+    """Validated result of the classification stage."""
+
     category: Category
+    intent: str = Field(min_length=1, max_length=200, strict=True)
+
+
+class RoutedResponse(StrictOutputModel):
+    """Validated content produced after selecting a category route."""
+
+    summary: str = Field(min_length=1, max_length=300, strict=True)
     sentiment: Sentiment
     key_points: list[str] = Field(min_length=3, max_length=3, strict=True)
-    final_answer: str = Field(min_length=1, max_length=200, strict=True)
+    final_answer: str = Field(min_length=1, max_length=1000, strict=True)
 
     @field_validator("key_points")
     @classmethod
@@ -45,3 +54,10 @@ class TextAnalysis(BaseModel):
         if any(not point for point in normalized):
             raise ValueError("key points must not be empty")
         return normalized
+
+
+class TextAnalysis(RoutedResponse):
+    """Combined structured result returned by the complete pipeline."""
+
+    category: Category
+    intent: str = Field(min_length=1, max_length=200, strict=True)
