@@ -7,12 +7,17 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from examples import SAMPLE_INPUTS
+from examples import ROUTING_EXAMPLES
 from llm_client import LLMClient, LLMError
-from prompts import DEFAULT_PROMPT_VARIANT, PromptVariant
-from schemas import Category, Sentiment, TextAnalysis
+from prompts import (
+    CLASSIFICATION_SYSTEM_PROMPT,
+    build_classification_user_prompt,
+    build_routed_system_prompt,
+    build_routed_user_prompt,
+)
+from schemas import Category, Classification, RoutedResponse, Sentiment, TextAnalysis
 
 LOGGER = logging.getLogger("llm_pipeline")
 
@@ -21,47 +26,87 @@ class PipelineError(RuntimeError):
     """Raised when pipeline input or model output is invalid."""
 
 
-def parse_analysis_response(raw_response: str) -> TextAnalysis:
-    """Parse and validate one structured model response."""
+def _parse_model_response[OutputModel: BaseModel](
+    raw_response: str,
+    model_type: type[OutputModel],
+    *,
+    stage: str,
+) -> OutputModel:
+    """Parse one JSON response and validate it for a named pipeline stage."""
 
     try:
         payload = json.loads(raw_response)
     except json.JSONDecodeError as error:
         message = (
-            "Ответ модели не является корректным JSON "
+            f"Ответ модели на этапе {stage} не является корректным JSON "
             f"(строка {error.lineno}, столбец {error.colno})"
         )
         raise PipelineError(message) from error
 
     try:
-        return TextAnalysis.model_validate(payload)
+        return model_type.model_validate(payload)
     except ValidationError as error:
         issues = "; ".join(
             f"{'.'.join(map(str, issue['loc'])) or '<root>'}: {issue['msg']}"
             for issue in error.errors()
         )
         raise PipelineError(
-            f"Ответ модели не прошёл проверку схемы: {issues}"
+            f"Ответ модели на этапе {stage} не прошёл проверку схемы: {issues}"
         ) from error
+
+
+def parse_analysis_response(raw_response: str) -> TextAnalysis:
+    """Parse a complete response used by the historical prompt comparison."""
+
+    return _parse_model_response(raw_response, TextAnalysis, stage="анализа")
+
+
+def parse_classification_response(raw_response: str) -> Classification:
+    """Parse the first-stage classification response."""
+
+    return _parse_model_response(raw_response, Classification, stage="классификации")
+
+
+def parse_routed_response(raw_response: str) -> RoutedResponse:
+    """Parse the second-stage routed response."""
+
+    return _parse_model_response(raw_response, RoutedResponse, stage="генерации")
 
 
 def process_text(
     text: str,
     client: LLMClient,
-    prompt_variant: PromptVariant = DEFAULT_PROMPT_VARIANT,
 ) -> TextAnalysis:
-    """Analyze one text and validate the provider's structured response."""
+    """Classify one text, route it in code, and validate the generated response."""
 
     normalized_text = text.strip()
     if not normalized_text:
         raise PipelineError("Input text must not be empty")
 
-    LOGGER.info("Starting text analysis")
-    raw_response = client.complete(
-        system_prompt=prompt_variant.system_prompt,
-        user_prompt=prompt_variant.build_user_prompt(normalized_text),
+    LOGGER.info("Starting text classification")
+    try:
+        raw_classification = client.complete(
+            system_prompt=CLASSIFICATION_SYSTEM_PROMPT,
+            user_prompt=build_classification_user_prompt(normalized_text),
+        )
+    except LLMError as error:
+        raise PipelineError(f"Ошибка LLM на этапе классификации: {error}") from error
+    classification = parse_classification_response(raw_classification)
+
+    LOGGER.info("Selected response route: %s", classification.category.value)
+    try:
+        raw_response = client.complete(
+            system_prompt=build_routed_system_prompt(classification.category),
+            user_prompt=build_routed_user_prompt(normalized_text, classification),
+        )
+    except LLMError as error:
+        raise PipelineError(f"Ошибка LLM на этапе генерации: {error}") from error
+    response = parse_routed_response(raw_response)
+    result = TextAnalysis(
+        **response.model_dump(),
+        category=classification.category,
+        intent=classification.intent,
     )
-    result = parse_analysis_response(raw_response)
 
     LOGGER.info("Text analysis completed")
     return result
@@ -82,6 +127,7 @@ def _print_result(title: str, result: TextAnalysis) -> None:
     print(f"\n=== {title} ===")
     print(f"Краткое резюме: {result.summary}")
     print(f"Категория: {result.category.value}")
+    print(f"Намерение: {result.intent}")
     print(f"Тональность: {result.sentiment.value}")
     print("Ключевые мысли:")
     for index, point in enumerate(result.key_points, start=1):
@@ -89,7 +135,10 @@ def _print_result(title: str, result: TextAnalysis) -> None:
     print(f"Итоговый ответ: {result.final_answer}")
 
 
-def _print_demo_summary(results: Sequence[tuple[str, TextAnalysis]]) -> None:
+def _print_demo_summary(
+    results: Sequence[tuple[str, TextAnalysis]],
+    expected_categories: dict[str, Category],
+) -> None:
     """Print aggregate counts and highlight results requiring attention."""
 
     category_counts = Counter(result.category for _, result in results)
@@ -113,6 +162,19 @@ def _print_demo_summary(results: Sequence[tuple[str, TextAnalysis]]) -> None:
         print(f"Требуют внимания: {', '.join(attention_titles)}")
     else:
         print("Требуют внимания: нет")
+
+    correct = sum(
+        result.category is expected_categories[title] for title, result in results
+    )
+    total = len(expected_categories)
+    print(f"Точность классификации: {correct}/{total}")
+    for title, result in results:
+        expected = expected_categories[title]
+        marker = "OK" if result.category is expected else "FAIL"
+        print(
+            f"  {marker} {title}: ожидалась {expected.value}, "
+            f"получена {result.category.value}"
+        )
 
 
 def _write_json(path: Path, results: TextAnalysis | list[TextAnalysis]) -> None:
@@ -150,7 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         inputs = [(args.input_file.name, file_text)]
         demo_mode = False
     else:
-        inputs = SAMPLE_INPUTS
+        inputs = [(example.title, example.text) for example in ROUTING_EXAMPLES]
         demo_mode = True
 
     if any(not text.strip() for _, text in inputs):
@@ -178,7 +240,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_result(title, result)
 
     if demo_mode and titled_results:
-        _print_demo_summary(titled_results)
+        expected_categories = {
+            example.title: example.expected_category for example in ROUTING_EXAMPLES
+        }
+        _print_demo_summary(titled_results, expected_categories)
 
     if args.output and not had_errors:
         try:

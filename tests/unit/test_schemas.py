@@ -1,11 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from schemas import Category, Sentiment, TextAnalysis
+from schemas import Category, Classification, RoutedResponse, Sentiment, TextAnalysis
 
 VALID_PAYLOAD = {
     "summary": "Summary",
-    "category": "request",
+    "category": "support",
+    "intent": "Get technical help",
     "sentiment": "neutral",
     "key_points": ["One", "Two", "Three"],
     "final_answer": "Response",
@@ -15,7 +16,8 @@ VALID_PAYLOAD = {
 def test_text_analysis_accepts_exactly_three_non_empty_points() -> None:
     result = TextAnalysis(
         summary="Summary",
-        category=Category.REQUEST,
+        category=Category.SUPPORT,
+        intent="Get technical help",
         sentiment=Sentiment.NEUTRAL,
         key_points=[" One ", "Two", "Three"],
         final_answer="Response",
@@ -41,7 +43,7 @@ def test_text_analysis_rejects_blank_point() -> None:
 
 @pytest.mark.parametrize(
     ("field", "length"),
-    [("summary", 301), ("final_answer", 201)],
+    [("summary", 301), ("intent", 201), ("final_answer", 1001)],
 )
 def test_text_analysis_rejects_overlong_strings(field: str, length: int) -> None:
     payload = VALID_PAYLOAD.copy()
@@ -54,20 +56,22 @@ def test_text_analysis_rejects_overlong_strings(field: str, length: int) -> None
 def test_text_analysis_accepts_length_boundaries() -> None:
     result = TextAnalysis(
         summary="s" * 300,
-        category=Category.INFORMATIONAL,
+        category=Category.GENERAL_QUESTION,
+        intent="Learn the answer",
         sentiment=Sentiment.POSITIVE,
         key_points=["one", "two", "three"],
-        final_answer="r" * 200,
+        final_answer="r" * 1000,
     )
 
     assert len(result.summary) == 300
-    assert len(result.final_answer) == 200
+    assert len(result.final_answer) == 1000
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("category", "unknown"),
+        ("category", "request"),
+        ("intent", 42),
         ("sentiment", "uncertain"),
         ("summary", 42),
         ("key_points", ["one", 2, "three"]),
@@ -80,7 +84,9 @@ def test_text_analysis_rejects_invalid_enum_or_type(field: str, value: object) -
         TextAnalysis.model_validate({**VALID_PAYLOAD, field: value})
 
 
-@pytest.mark.parametrize("field", ["summary", "category", "sentiment", "final_answer"])
+@pytest.mark.parametrize(
+    "field", ["summary", "category", "intent", "sentiment", "final_answer"]
+)
 def test_text_analysis_rejects_missing_required_field(field: str) -> None:
     payload = VALID_PAYLOAD.copy()
     del payload[field]
@@ -92,3 +98,31 @@ def test_text_analysis_rejects_missing_required_field(field: str) -> None:
 def test_text_analysis_rejects_extra_field() -> None:
     with pytest.raises(ValidationError):
         TextAnalysis.model_validate({**VALID_PAYLOAD, "unexpected": True})
+
+
+@pytest.mark.parametrize("category", Category)
+def test_classification_accepts_every_business_category(category: Category) -> None:
+    result = Classification(category=category, intent="Understand the request")
+
+    assert result.category is category
+
+
+def test_classification_rejects_blank_intent_and_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        Classification.model_validate({"category": "support", "intent": " "})
+    with pytest.raises(ValidationError):
+        Classification.model_validate(
+            {"category": "support", "intent": "Get help", "extra": True}
+        )
+
+
+def test_routed_response_does_not_accept_classification_fields() -> None:
+    payload = {
+        key: value
+        for key, value in VALID_PAYLOAD.items()
+        if key not in {"category", "intent"}
+    }
+
+    RoutedResponse.model_validate(payload)
+    with pytest.raises(ValidationError):
+        RoutedResponse.model_validate({**payload, "category": "support"})
