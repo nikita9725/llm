@@ -40,21 +40,59 @@ def test_application_builds_demo_summary() -> None:
     assert len(presenter.summaries) == 1
 
 
-def test_application_continues_batch_then_raises_short_error() -> None:
+def test_application_returns_partial_batch_success() -> None:
     presenter = SpyPresenter()
     pipeline = FakePipeline(
         [PipelineError("first failed"), make_result(Category.FEEDBACK)]
     )
     app = AnalysisApplication(pipeline, presenter, InMemoryResultWriter())
 
-    with pytest.raises(ApplicationError, match="First: first failed"):
-        app.analyze(
-            [("First", "one"), ("Second", "two")],
-            expected_categories={
-                "First": Category.SUPPORT,
-                "Second": Category.FEEDBACK,
-            },
-        )
+    report = app.analyze(
+        [("First", "one"), ("Second", "two")],
+        expected_categories={
+            "First": Category.SUPPORT,
+            "Second": Category.FEEDBACK,
+        },
+    )
 
     assert pipeline.inputs == ["one", "two"]
     assert [title for title, _ in presenter.results] == ["Second"]
+    assert report.errors == [("First", "first failed")]
+    assert presenter.errors == [[("First", "first failed")]]
+
+
+def test_application_raises_when_every_input_fails() -> None:
+    app = AnalysisApplication(
+        FakePipeline([PipelineError("offline")]),
+        SpyPresenter(),
+        InMemoryResultWriter(),
+    )
+
+    with pytest.raises(ApplicationError, match="Only: offline"):
+        app.analyze([("Only", "text")])
+
+
+def test_failed_batch_writes_error_envelope_before_raising() -> None:
+    writer = InMemoryResultWriter()
+    app = AnalysisApplication(
+        FakePipeline([PipelineError("first"), PipelineError("second")]),
+        SpyPresenter(),
+        writer,
+    )
+    output = Path("report.json")
+
+    with pytest.raises(ApplicationError):
+        app.analyze([("One", "one"), ("Two", "two")], output=output)
+
+    assert writer.writes == [
+        (
+            output,
+            {
+                "results": [],
+                "errors": [
+                    {"title": "One", "message": "first"},
+                    {"title": "Two", "message": "second"},
+                ],
+            },
+        )
+    ]

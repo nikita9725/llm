@@ -75,6 +75,32 @@ def test_demo_integrates_ten_complete_chains() -> None:
 
 
 @pytest.mark.integration
+def test_demo_keeps_partial_results_and_writes_error_report(tmp_path: Path) -> None:
+    responses = ["not JSON", "still not JSON"]
+    responses.extend(
+        response
+        for example in ROUTING_EXAMPLES[1:]
+        for response in stage_responses(example.expected_category.value)
+    )
+    gateway = FakeLLMGateway(responses)
+    stream = StringIO()
+    output = tmp_path / "partial-report.json"
+
+    run_cli(
+        ["analyze", "--output", str(output)],
+        root=TestCompositionRoot(gateway, stream),
+        stream=stream,
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert len(report["results"]) == 9
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["title"] == ROUTING_EXAMPLES[0].title
+    assert "=== Ошибки ===" in stream.getvalue()
+    assert stream.getvalue().count("5. SELF-CHECK: PASS") == 9
+
+
+@pytest.mark.integration
 def test_compare_prompts_uses_the_same_cli_entry(tmp_path: Path) -> None:
     flat = json.dumps(
         {

@@ -93,6 +93,28 @@ def test_each_stage_receives_the_previous_result() -> None:
     assert "Answer" in SelfCheckPromptStrategy().build_user_prompt(check)
 
 
+def test_multiline_prompts_have_no_source_code_indentation() -> None:
+    strategies_and_inputs = zip(
+        (
+            MeaningPromptStrategy(),
+            ClassificationPromptStrategy(),
+            StructuredFieldsPromptStrategy(),
+            FinalAnswerPromptStrategy(),
+            SelfCheckPromptStrategy(),
+        ),
+        inputs(),
+        strict=True,
+    )
+
+    for strategy, data in strategies_and_inputs:
+        for prompt in (
+            strategy.build_system_prompt(data),
+            strategy.build_user_prompt(data),
+        ):
+            assert prompt == prompt.strip()
+            assert "\n            <" not in prompt
+
+
 @pytest.mark.parametrize("category", Category)
 def test_final_answer_strategy_selects_route(category: Category) -> None:
     _, _, structured, _, _ = inputs()

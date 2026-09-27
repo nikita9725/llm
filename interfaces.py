@@ -18,6 +18,8 @@ class PipelineRunner(Protocol):
 class ResultPresenter(Protocol):
     def present_result(self, title: str, result: PipelineResult) -> None: ...
 
+    def present_errors(self, errors: Sequence[tuple[str, str]]) -> None: ...
+
     def present_summary(
         self,
         results: Sequence[tuple[str, PipelineResult]],

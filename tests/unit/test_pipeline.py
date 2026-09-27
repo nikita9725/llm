@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from llm_client import LLMAPIError
-from pipeline import PipelineError, build_default_pipeline
+from llm_client import EmptyLLMResponseError, LLMAPIError
+from pipeline import MAX_RAW_RESPONSE_CHARS, PipelineError, build_default_pipeline
 from schemas import Category
 from tests.fakes import FakeLLMGateway, stage_responses
 
@@ -44,13 +44,74 @@ def test_pipeline_routes_final_answer(category: Category) -> None:
 @pytest.mark.parametrize("failed_stage", range(5))
 def test_pipeline_identifies_malformed_stage(failed_stage: int) -> None:
     responses = stage_responses()
-    responses[failed_stage] = "{broken"
+    responses[failed_stage : failed_stage + 1] = ["{broken", "{still broken"]
     gateway = FakeLLMGateway(responses)
 
     with pytest.raises(PipelineError, match="не является корректным JSON"):
         build_default_pipeline(gateway).run("Text")
 
-    assert len(gateway.calls) == failed_stage + 1
+    assert len(gateway.calls) == failed_stage + 2
+
+
+def test_pipeline_repairs_invalid_json_once() -> None:
+    valid = stage_responses()
+    responses = ["not JSON", valid[0], *valid[1:]]
+    gateway = FakeLLMGateway(responses)
+
+    result = build_default_pipeline(gateway).run("Text")
+
+    assert result.meaning.core_meaning
+    assert len(gateway.calls) == 6
+    repair_system, repair_user = gateway.calls[1]
+    assert "previous response was rejected" in repair_system
+    assert "not JSON" in repair_user
+
+
+def test_pipeline_repairs_response_with_missing_keys() -> None:
+    valid = stage_responses()
+    responses = ['{"core_meaning":"Only one field"}', valid[0], *valid[1:]]
+
+    result = build_default_pipeline(FakeLLMGateway(responses)).run("Text")
+
+    assert result.meaning.user_goal
+
+
+def test_pipeline_repairs_empty_response() -> None:
+    valid = stage_responses()
+    responses = [EmptyLLMResponseError("empty"), valid[0], *valid[1:]]
+
+    result = build_default_pipeline(FakeLLMGateway(responses)).run("Text")
+
+    assert result.meaning.important_details
+
+
+def test_pipeline_repairs_too_long_field() -> None:
+    valid = stage_responses()
+    too_long = json.dumps(
+        {
+            "core_meaning": "x" * 501,
+            "user_goal": "Goal",
+            "important_details": ["Detail"],
+        }
+    )
+    responses = [too_long, valid[0], *valid[1:]]
+
+    result = build_default_pipeline(FakeLLMGateway(responses)).run("Text")
+
+    assert len(result.meaning.core_meaning) <= 500
+
+
+def test_pipeline_limits_raw_response_in_repair_prompt() -> None:
+    valid = stage_responses()
+    oversized = "x" * (MAX_RAW_RESPONSE_CHARS + 1)
+    gateway = FakeLLMGateway([oversized, valid[0], *valid[1:]])
+
+    build_default_pipeline(gateway).run("Text")
+
+    repair_user = gateway.calls[1][1]
+    assert "слишком длинный" in repair_user
+    assert oversized not in repair_user
+    assert "x" * 2_000 in repair_user
 
 
 def test_pipeline_wraps_gateway_error_with_stage_name() -> None:

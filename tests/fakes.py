@@ -109,9 +109,13 @@ class SpyPresenter:
             tuple[Sequence[tuple[str, PipelineResult]], Mapping[str, Category]]
         ] = []
         self.comparisons: list[tuple[dict[str, Any], Path]] = []
+        self.errors: list[Sequence[tuple[str, str]]] = []
 
     def present_result(self, title: str, result: PipelineResult) -> None:
         self.results.append((title, result))
+
+    def present_errors(self, errors: Sequence[tuple[str, str]]) -> None:
+        self.errors.append(errors)
 
     def present_summary(
         self,
