@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = "==3.14.*"
 
 [[package]]
@@ -220,7 +220,7 @@ wheels = [
 [[package]]
 name = "llm-pipeline"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "openai" },
     { name = "pydantic" },

@@ -1,82 +1,114 @@
 import pytest
 
 from prompts import (
-    CLASSIFICATION_SYSTEM_PROMPT,
-    DEFAULT_PROMPT_VARIANT,
-    PROMPT_VARIANTS,
     ROUTE_INSTRUCTIONS,
-    PromptVariant,
-    build_classification_user_prompt,
-    build_routed_system_prompt,
-    build_user_prompt,
+    ClassificationPromptStrategy,
+    FinalAnswerPromptStrategy,
+    MeaningPromptStrategy,
+    SelfCheckPromptStrategy,
+    StructuredFieldsPromptStrategy,
 )
-from schemas import Category
+from schemas import (
+    Category,
+    Classification,
+    ClassificationInput,
+    FinalAnswer,
+    FinalAnswerInput,
+    MeaningExtraction,
+    MeaningInput,
+    SelfCheckInput,
+    StructuredFields,
+    StructuredFieldsInput,
+)
 
 
-def test_three_named_prompt_variants_are_available() -> None:
-    assert [variant.name for variant in PROMPT_VARIANTS] == [
-        "minimal",
-        "format_focused",
-        "structured",
-    ]
-    assert DEFAULT_PROMPT_VARIANT in PROMPT_VARIANTS
+def inputs() -> tuple[
+    MeaningInput,
+    ClassificationInput,
+    StructuredFieldsInput,
+    FinalAnswerInput,
+    SelfCheckInput,
+]:
+    meaning_input = MeaningInput(source_text="Unique source")
+    meaning = MeaningExtraction(
+        core_meaning="Meaning", user_goal="Goal", important_details=["Detail"]
+    )
+    classification_input = ClassificationInput(
+        source_text="Unique source", meaning=meaning
+    )
+    classification = Classification(category=Category.SUPPORT, intent="Get help")
+    structured_input = StructuredFieldsInput(
+        source_text="Unique source",
+        meaning=meaning,
+        classification=classification,
+    )
+    fields = StructuredFields(
+        summary="Summary",
+        sentiment="neutral",
+        key_points=["One", "Two", "Three"],
+    )
+    final_input = FinalAnswerInput(
+        **structured_input.model_dump(), structured_fields=fields
+    )
+    check_input = SelfCheckInput(
+        **final_input.model_dump(), final_answer=FinalAnswer(text="Answer")
+    )
+    return (
+        meaning_input,
+        classification_input,
+        structured_input,
+        final_input,
+        check_input,
+    )
 
 
-@pytest.mark.parametrize("variant", PROMPT_VARIANTS)
-def test_prompt_variant_inserts_source_text_exactly_once(
-    variant: PromptVariant,
-) -> None:
-    source_text = "Unique {source} text"
+def test_every_strategy_has_a_distinct_stage_and_includes_source() -> None:
+    strategies_and_inputs = zip(
+        (
+            MeaningPromptStrategy(),
+            ClassificationPromptStrategy(),
+            StructuredFieldsPromptStrategy(),
+            FinalAnswerPromptStrategy(),
+            SelfCheckPromptStrategy(),
+        ),
+        inputs(),
+        strict=True,
+    )
 
-    rendered = variant.build_user_prompt(source_text)
+    stages = []
+    for strategy, data in strategies_and_inputs:
+        stages.append(strategy.stage_name)
+        assert "Unique source" in strategy.build_user_prompt(data)
+        assert "JSON" in strategy.build_system_prompt(data)
 
-    assert rendered.count(source_text) == 1
-
-
-def test_build_user_prompt_uses_default_variant() -> None:
-    assert build_user_prompt("Text") == DEFAULT_PROMPT_VARIANT.build_user_prompt("Text")
-
-
-@pytest.mark.parametrize("variant", PROMPT_VARIANTS)
-def test_every_prompt_requests_complete_structured_contract(
-    variant: PromptVariant,
-) -> None:
-    for field in (
-        "summary",
-        "category",
-        "intent",
-        "sentiment",
-        "key_points",
-        "final_answer",
-    ):
-        assert field in variant.system_prompt
-    for value in (
-        "support",
-        "feedback",
-        "complaint",
-        "sales",
-        "general_question",
-        "positive",
-        "neutral",
-        "negative",
-        "mixed",
-    ):
-        assert value in variant.system_prompt
+    assert len(set(stages)) == 5
 
 
-def test_classifier_prompt_contains_all_categories_and_source_once() -> None:
-    source = "Unique source text"
+def test_each_stage_receives_the_previous_result() -> None:
+    _, classification, structured, final, check = inputs()
 
-    assert build_classification_user_prompt(source).count(source) == 1
-    for category in Category:
-        assert category.value in CLASSIFICATION_SYSTEM_PROMPT
+    assert "Meaning" in ClassificationPromptStrategy().build_user_prompt(classification)
+    assert "Get help" in StructuredFieldsPromptStrategy().build_user_prompt(structured)
+    assert "Summary" in FinalAnswerPromptStrategy().build_user_prompt(final)
+    assert "Answer" in SelfCheckPromptStrategy().build_user_prompt(check)
 
 
-def test_every_category_has_a_distinct_explicit_route_instruction() -> None:
-    assert set(ROUTE_INSTRUCTIONS) == set(Category)
-    prompts = [build_routed_system_prompt(category) for category in Category]
+@pytest.mark.parametrize("category", Category)
+def test_final_answer_strategy_selects_route(category: Category) -> None:
+    _, _, structured, _, _ = inputs()
+    data = FinalAnswerInput(
+        **{
+            **structured.model_dump(),
+            "classification": Classification(category=category, intent="Intent"),
+        },
+        structured_fields=StructuredFields(
+            summary="Summary",
+            sentiment="neutral",
+            key_points=["One", "Two", "Three"],
+        ),
+    )
 
-    assert len(set(prompts)) == len(Category)
-    for category, prompt in zip(Category, prompts, strict=True):
-        assert f"Route: {category.value}" in prompt
-        assert ROUTE_INSTRUCTIONS[category] in prompt
+    prompt = FinalAnswerPromptStrategy().build_system_prompt(data)
+
+    assert f"Route: {category.value}" in prompt
+    assert ROUTE_INSTRUCTIONS[category] in prompt

@@ -1,54 +1,48 @@
-"""Provider-neutral client for OpenAI-compatible chat completion APIs."""
+"""OpenAI-compatible implementation of the LLM gateway interface."""
 
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
 
 class LLMError(RuntimeError):
-    """Base error for failures while calling an LLM provider."""
+    """Base error for failures at the provider boundary."""
 
 
 class LLMConfigurationError(LLMError):
-    """Raised when required provider configuration is missing."""
+    pass
 
 
 class LLMAPIError(LLMError):
-    """Raised when the provider rejects or cannot complete a request."""
+    pass
 
 
 class EmptyLLMResponseError(LLMError):
-    """Raised when the provider returns no usable message content."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
-    """Runtime configuration for an OpenAI-compatible endpoint."""
-
     api_key: str
     base_url: str
     model: str
 
     @classmethod
-    def from_env(cls) -> LLMConfig:
-        """Load configuration from .env and the process environment."""
+    def from_mapping(cls, source: Mapping[str, str | None]) -> LLMConfig:
+        """Create configuration without reading global process state."""
 
-        load_dotenv()
         values = {
-            "LLM_API_KEY": os.getenv("LLM_API_KEY", "").strip(),
-            "LLM_BASE_URL": os.getenv("LLM_BASE_URL", "").strip(),
-            "LLM_MODEL": os.getenv("LLM_MODEL", "").strip(),
+            name: (source.get(name) or "").strip()
+            for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
         }
         missing = [name for name, value in values.items() if not value]
         if missing:
-            joined = ", ".join(missing)
             raise LLMConfigurationError(
-                f"Missing required environment variables: {joined}"
+                f"Missing required environment variables: {', '.join(missing)}"
             )
         return cls(
             api_key=values["LLM_API_KEY"],
@@ -58,14 +52,9 @@ class LLMConfig:
 
 
 class LLMClient:
-    """Small adapter around the provider SDK; contains API-call logic only."""
+    """Small infrastructure adapter; orchestration lives elsewhere."""
 
-    def __init__(
-        self,
-        config: LLMConfig,
-        *,
-        sdk_client: Any | None = None,
-    ) -> None:
+    def __init__(self, config: LLMConfig, *, sdk_client: Any | None = None) -> None:
         self.config = config
         self._client = sdk_client or OpenAI(
             api_key=config.api_key,
@@ -73,13 +62,7 @@ class LLMClient:
             timeout=60.0,
         )
 
-    @classmethod
-    def from_env(cls) -> LLMClient:
-        return cls(LLMConfig.from_env())
-
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """Request one JSON chat completion and return its textual content."""
-
         try:
             response = self._client.chat.completions.create(
                 model=self.config.model,

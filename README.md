@@ -1,14 +1,61 @@
-# LLM pipeline
+# Multi-step LLM pipeline — День 5
 
-Учебный provider-neutral pipeline: принимает текст, вызывает любой OpenAI-compatible
-LLM API, классифицирует запрос, явно выбирает маршрут ответа в Python и возвращает
-строго валидированный JSON.
+Учебное приложение показывает, как построить не один большой prompt, а прозрачную
+цепочку из пяти LLM-вызовов. Результат каждого шага валидируется Pydantic и только
+после этого передаётся дальше.
 
-## Требования и установка
+## Что построено
 
-- Python 3.14
-- [`uv`](https://docs.astral.sh/uv/)
-- API, совместимый с OpenAI Chat Completions и JSON mode
+```text
+CLI
+ └── AnalysisApplication
+      └── MultiStepPipeline
+           ├── 1. extract meaning
+           ├── 2. classify request
+           ├── 3. build structured fields
+           ├── 4. generate final answer
+           └── 5. self-check result
+```
+
+Один текст требует пяти API-вызовов. Demo из десяти примеров — пятидесяти.
+
+Этапы выполняются последовательно:
+
+1. **Meaning extraction** выделяет смысл, цель пользователя и важные детали.
+2. **Classification** получает исходный текст и результат первого этапа, затем
+   выбирает одну из категорий: `support`, `feedback`, `complaint`, `sales`
+   или `general_question`.
+3. **Structured fields** строит резюме, тональность и три ключевые мысли.
+4. **Final answer** использует все предыдущие результаты и инструкцию выбранного
+   маршрута.
+5. **Self-check** сравнивает ответ с исходным текстом, ищет противоречия и
+   потерянные детали.
+
+Self-check — аудитор, а не автор ответа. Если он возвращает `FAIL`, pipeline всё
+равно успешно завершён, а обнаруженные проблемы сохраняются в `issues`.
+
+## Почему код разделён на объекты
+
+- `interfaces.py` содержит Protocol-интерфейсы. Бизнес-логика зависит от
+  `LLMGateway`, а не от OpenAI SDK.
+- `LLMStep` реализует Template Method: построить prompts, вызвать gateway,
+  разобрать JSON, проверить схему и записать лог.
+- Каждый этап имеет собственную `PromptStrategy`. Стратегию можно заменить без
+  изменения orchestration.
+- `MultiStepPipeline` показывает порядок выполнения без скрытой магии.
+- `AnalysisApplication` координирует pipeline, вывод и сохранение.
+- `ProductionCompositionRoot` — единственное место, где создаются конкретные
+  production-объекты.
+- `main.py` только запускает единую CLI.
+
+Это не классическая Chain of Responsibility. В ней запрос обычно обрабатывает один
+из подходящих обработчиков, а здесь обязательны все пять звеньев, поэтому явный
+pipeline точнее отражает задачу.
+
+## Установка
+
+Требуются Python 3.14, [uv](https://docs.astral.sh/uv/) и API, совместимый с
+OpenAI Chat Completions JSON mode.
 
 ```bash
 uv python install 3.14
@@ -16,132 +63,127 @@ uv sync
 cp .env.example .env
 ```
 
-Заполните `.env` параметрами провайдера:
+Настройте `.env`:
 
 ```dotenv
 LLM_API_KEY=your-secret-key
 LLM_BASE_URL=https://your-provider.example/v1
 LLM_MODEL=your-model-name
+RUN_E2E=false
 ```
 
-Файл `.env` исключён из Git. Ключ нельзя добавлять в `.env.example` или исходный код.
+Конфигурация создаётся через `LLMConfig.from_mapping()`. Чтение `.env` и
+окружения выполняется только в composition root, поэтому unit-тестам не нужно
+менять глобальное окружение.
 
-## Запуск
+## Единая точка входа
 
-Один текст:
+У приложения одна команда и две подкоманды.
+
+Анализ одного текста:
 
 ```bash
-uv run python main.py --text "Текст для анализа"
+uv run llm-pipeline analyze --text "Не могу войти после смены телефона"
 ```
 
-Текст из UTF-8 файла и сохранение результата:
+Чтение UTF-8 файла и сохранение полной трассы:
 
 ```bash
-uv run python main.py --input-file sample.txt --output output.json
+uv run llm-pipeline analyze --input-file sample.txt --output result.json
 ```
 
-Без аргументов программа последовательно обрабатывает десять размеченных примеров:
+Demo на десяти размеченных примерах:
 
 ```bash
-uv run python main.py
+uv run llm-pipeline analyze
 ```
 
-Для каждого примера выполняются классификация и генерация, поэтому demo-режим
-делает 20 API-запросов. После результатов он выводит ожидаемые и полученные
-категории и итоговую точность классификации.
-
-## Сравнение промптов (День 2)
-
-В `prompts.py` сохранены три независимых монолитных варианта: `minimal`,
-`format_focused` и `structured`. Набор из десяти текстов можно прогнать через них
-одной командой (30 API-запросов):
+Историческое сравнение промптов Дня 2:
 
 ```bash
-uv run python compare_prompts.py --output prompt_comparison.json
+uv run llm-pipeline compare-prompts --output prompt_comparison.json
 ```
 
-Это исторический эксперимент дня 2, а не основной routed pipeline. После изменения
-контракта прежние сравнительные результаты необходимо получить заново.
+`uv run python main.py ...` остаётся совместимым launcher, но вызывает тот же
+CLI-dispatcher. У `compare_prompts.py` больше нет отдельного запуска.
 
-## Structured output и валидация (День 3)
+При ожидаемой ошибке CLI показывает короткое сообщение и поднимает `SystemExit`.
+Ручных `return 0` и `return 1` нет. Неожиданная ошибка сохраняет traceback,
+что полезно при обучении и отладке.
 
-Итоговая форма результата:
+## Итоговый JSON
 
 ```json
 {
-  "summary": "Краткое резюме",
-  "sentiment": "neutral",
-  "key_points": ["Первая мысль", "Вторая мысль", "Третья мысль"],
-  "final_answer": "Итоговый ответ",
-  "category": "support",
-  "intent": "восстановить доступ к аккаунту"
+  "source_text": "Не могу войти после смены телефона",
+  "meaning": {
+    "core_meaning": "Пользователь потерял доступ",
+    "user_goal": "Восстановить вход",
+    "important_details": ["Проблема появилась после смены телефона"]
+  },
+  "classification": {
+    "category": "support",
+    "intent": "восстановить доступ"
+  },
+  "structured_fields": {
+    "summary": "Нужна помощь со входом",
+    "sentiment": "neutral",
+    "key_points": ["Нет доступа", "Телефон изменён", "Нужно восстановление"]
+  },
+  "final_answer": {
+    "text": "Проверьте доступ к привязанной почте..."
+  },
+  "self_check": {
+    "is_consistent": true,
+    "details_preserved": true,
+    "issues": []
+  }
 }
 ```
 
-Допустимые `category`: `support`, `feedback`, `complaint`, `sales`,
-`general_question`. Допустимые `sentiment`: `positive`, `neutral`, `negative`,
-`mixed`.
+## Тестирование
 
-`summary` ограничен 300 символами, `intent` — 200, `final_answer` — 1000, а
-`key_points` всегда содержит ровно три непустых строки. Pydantic-схемы запрещают
-пропущенные и лишние поля, неизвестные enum-значения и неправильные типы данных.
-Ошибки JSON и схемы содержат название этапа: классификация или генерация.
+Тесты разделены по уровню:
 
-## Классификация и routing (День 4)
-
-Основной pipeline использует два независимых LLM-вызова:
-
-1. Классификатор возвращает только валидированные `category` и `intent`.
-2. Python-код выбирает инструкцию из явного mapping по `Category`.
-3. Генератор формирует остальные поля, после чего результаты объединяются.
-
-Маршруты задают разное поведение:
-
-- `support` — структурированные технические шаги;
-- `feedback` — признание предложения и следующий шаг без ложных обещаний;
-- `complaint` — эмпатичный план решения или эскалации;
-- `sales` — краткое ценностное предложение и призыв к действию;
-- `general_question` — прямой информативный ответ.
-
-При сочетании технической проблемы с явной претензией приоритет получает
-`complaint`. `intent` и остальные естественные поля используют язык входного текста.
-
-## Тесты
-
-Unit-тесты не обращаются к сети и не расходуют API quota:
+- **unit** изолируют одну схему, стратегию или класс;
+- **integration** собирают настоящие application, pipeline, пять шагов, presenter
+  и JSON writer, но используют `FakeLLMGateway` без сети;
+- **E2E** обращаются к реальному провайдеру только по явному флагу.
 
 ```bash
+uv run pytest tests/unit
+uv run pytest tests/integration
 uv run pytest
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy
 ```
 
-Базовый E2E-тест выполняет реальный двухшаговый pipeline и запускается только явно:
+Реальный пятишаговый E2E:
 
 ```bash
-RUN_E2E=1 uv run pytest -m e2e
+RUN_E2E=true uv run pytest -m e2e
 ```
 
-Расширенная проверка routing обрабатывает все десять размеченных примеров (20
-API-вызовов) и требует минимум 8 правильных категорий:
+Полный routing E2E из 50 запросов:
 
 ```bash
-RUN_ROUTING_E2E=1 uv run pytest -m e2e \
-  tests/e2e/test_pipeline_e2e.py::test_routing_accuracy_on_labeled_examples
+RUN_ROUTING_E2E=true uv run pytest -m e2e \
+  tests/e2e/test_pipeline_e2e.py::test_routing_accuracy_on_all_examples
 ```
 
-Без флага запуска или необходимых `LLM_*` переменных E2E-тесты пропускаются.
+Fake, spy и in-memory реализации передаются через конструкторы. В test suite нет
+`monkeypatch`: зависимости заменяются через интерфейсы.
 
 ## Структура
 
-- `llm_client.py` — конфигурация и вызов API;
-- `prompts.py` — промпты классификации и mapping инструкций маршрутов;
-- `compare_prompts.py` — воспроизводимое сравнение вариантов дня 2;
-- `schemas.py` — Pydantic-схемы этапов и итогового результата;
-- `main.py` — двухшаговый orchestration и CLI;
-- `examples.py` — десять размеченных текстов, по два на каждый маршрут;
-- `tests/unit/` — изолированные unit-тесты;
-- `tests/e2e/` — opt-in тесты с реальным LLM API.
-
-Streaming, retries и fallback пока не реализованы.
+- `main.py` — тонкий launcher;
+- `cli.py` — единый parser, подкоманды и production composition root;
+- `interfaces.py` — интерфейсы внешних границ;
+- `application.py` — use cases, presenter и JSON writer;
+- `pipeline.py` — `LLMStep` и пятишаговый orchestration;
+- `prompts.py` — prompt strategies и исторические варианты Дня 2;
+- `schemas.py` — входные, промежуточные и итоговые Pydantic-модели;
+- `llm_client.py` — OpenAI-compatible реализация `LLMGateway`;
+- `examples.py` — десять размеченных примеров;
+- `tests/unit`, `tests/integration`, `tests/e2e` — три уровня тестов.
