@@ -14,8 +14,10 @@ def response(summary: str = "Summary") -> str:
     return json.dumps(
         {
             "summary": summary,
+            "category": "request",
+            "sentiment": "neutral",
             "key_points": ["One", "Two", "Three"],
-            "helpful_response": "Response",
+            "final_answer": "Response",
         }
     )
 
@@ -35,7 +37,7 @@ def test_compare_prompts_runs_each_variant_on_each_input() -> None:
             "variant": variant.name,
             "valid_responses": 2,
             "total_inputs": 2,
-            "average_output_characters": 26,
+            "average_output_characters": 40,
         }
         for variant in variants
     ]

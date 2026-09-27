@@ -30,3 +30,24 @@ def test_prompt_variant_inserts_source_text_exactly_once(
 
 def test_build_user_prompt_uses_default_variant() -> None:
     assert build_user_prompt("Text") == DEFAULT_PROMPT_VARIANT.build_user_prompt("Text")
+
+
+@pytest.mark.parametrize("variant", PROMPT_VARIANTS)
+def test_every_prompt_requests_complete_structured_contract(
+    variant: PromptVariant,
+) -> None:
+    for field in ("summary", "category", "sentiment", "key_points", "final_answer"):
+        assert field in variant.system_prompt
+    for value in (
+        "question",
+        "request",
+        "feedback",
+        "problem",
+        "informational",
+        "other",
+        "positive",
+        "neutral",
+        "negative",
+        "mixed",
+    ):
+        assert value in variant.system_prompt
