@@ -1,6 +1,7 @@
 """Use cases and output adapters, independent from argparse and the SDK."""
 
 import json
+import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from llm_client import LLMError
 from pipeline import PipelineError, parse_analysis_response
 from prompts import PROMPT_VARIANTS, PromptVariant
 from schemas import Category, PipelineResult, Sentiment
+
+LOGGER = logging.getLogger("llm_pipeline")
 
 
 class ApplicationError(RuntimeError):
@@ -47,32 +50,57 @@ class AnalysisApplication:
     ) -> ApplicationReport:
         results: list[tuple[str, PipelineResult]] = []
         errors: list[tuple[str, str]] = []
+        is_batch = len(inputs) > 1
 
         for title, text in inputs:
             try:
                 result = self._pipeline.run(text)
             except PipelineError as error:
                 errors.append((title, str(error)))
+                LOGGER.error("Analysis failed | input=%s | error=%s", title, error)
                 continue
             results.append((title, result))
             self._presenter.present_result(title, result)
 
         if expected_categories is not None:
             self._presenter.present_summary(results, expected_categories)
+        if errors:
+            self._presenter.present_errors(errors)
 
         report = ApplicationReport(results=results, errors=errors)
-        if output is not None and not errors:
+        if output is not None:
             payload: object
-            if expected_categories is None:
-                payload = results[0][1] if results else []
+            if not is_batch:
+                if results:
+                    payload = results[0][1]
+                else:
+                    payload = []
             else:
-                payload = [result for _, result in results]
-            self._writer.write(output, payload)
+                payload = self._batch_payload(report)
+            if results or is_batch:
+                self._writer.write(output, payload)
 
-        if errors:
+        if errors and not results:
             details = "; ".join(f"{title}: {message}" for title, message in errors)
             raise ApplicationError(f"Analysis failed: {details}")
+        if errors:
+            LOGGER.warning(
+                "Batch completed with partial success | succeeded=%d | failed=%d",
+                len(results),
+                len(errors),
+            )
         return report
+
+    @staticmethod
+    def _batch_payload(report: ApplicationReport) -> dict[str, object]:
+        return {
+            "results": [
+                {"title": title, "result": result} for title, result in report.results
+            ],
+            "errors": [
+                {"title": title, "message": message} for title, message in report.errors
+            ],
+        }
 
 
 class PromptComparisonApplication:
@@ -159,21 +187,32 @@ def compare_prompts(
 
 
 class JsonResultWriter:
-    def write(self, path: Path, payload: object) -> None:
-        def serializable(value: object) -> object:
-            if isinstance(value, BaseModel):
-                return value.model_dump(mode="json")
-            if isinstance(value, list):
-                return [serializable(item) for item in value]
-            return value
-
+    @staticmethod
+    def write(path: Path, payload: object) -> None:
         try:
             path.write_text(
-                json.dumps(serializable(payload), ensure_ascii=False, indent=2) + "\n",
+                json.dumps(
+                    JsonResultWriter._serializable(payload),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
                 encoding="utf-8",
             )
         except OSError as error:
             raise ApplicationError(f"Could not write output file: {path}") from error
+
+    @staticmethod
+    def _serializable(value: object) -> object:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json")
+        if isinstance(value, list):
+            return [JsonResultWriter._serializable(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: JsonResultWriter._serializable(item) for key, item in value.items()
+            }
+        return value
 
 
 class ConsolePresenter:
@@ -203,6 +242,11 @@ class ConsolePresenter:
         self._line(f"5. SELF-CHECK: {status}")
         for issue in result.self_check.issues:
             self._line(f"   - {issue}")
+
+    def present_errors(self, errors: Sequence[tuple[str, str]]) -> None:
+        self._line("\n=== Ошибки ===")
+        for title, message in errors:
+            self._line(f"- {title}: {message}")
 
     def present_summary(
         self,
